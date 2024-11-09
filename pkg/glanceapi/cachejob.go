@@ -98,6 +98,7 @@ func ImageCacheJob(
 					Completions: &completions,
 					Template: corev1.PodTemplateSpec{
 						Spec: corev1.PodSpec{
+							NodeSelector: instance.Spec.NodeSelector,
 							SecurityContext: &corev1.PodSecurityContext{
 								FSGroup: ptr.To(glance.GlanceUID),
 							},

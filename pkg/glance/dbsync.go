@@ -114,6 +114,7 @@ func DbSyncJob(
 					Annotations: annotations,
 				},
 				Spec: corev1.PodSpec{
+					NodeSelector:       instance.Spec.NodeSelector,
 					RestartPolicy:      corev1.RestartPolicyOnFailure,
 					ServiceAccountName: instance.RbacResourceName(),
 					Containers: []corev1.Container{
