@@ -59,6 +59,7 @@ import (
 	"github.com/openstack-k8s-operators/lib-common/modules/common/service"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/statefulset"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/tls"
+	topologyRef "github.com/openstack-k8s-operators/lib-common/modules/common/topology"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/util"
 	mariadbv1 "github.com/openstack-k8s-operators/mariadb-operator/api/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -248,10 +249,10 @@ func (r *GlanceAPIReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &glancev1.GlanceAPI{}, topologyField, func(rawObj client.Object) []string {
 		// Extract the topology name from the spec, if one is provided
 		cr := rawObj.(*glancev1.GlanceAPI)
-		if cr.Spec.Topology == nil {
+		if cr.Spec.TopologyRef == nil {
 			return nil
 		}
-		return []string{cr.Spec.Topology.Name}
+		return []string{cr.Spec.TopologyRef.Name}
 	}); err != nil {
 		return err
 	}
@@ -411,7 +412,16 @@ func (r *GlanceAPIReconciler) reconcileDelete(ctx context.Context, instance *gla
 		return ctrlResult, err
 	}
 	// Remove finalizer on the Topology CR
-	if ctrlResult, err := r.ensureDeletedTopology(ctx, instance, helper); err != nil {
+	if ctrlResult, err := topologyRef.EnsureDeletedTopologyRef(
+		ctx,
+		helper,
+		r.Client,
+		&topologyRef.Topology{
+			Name:      instance.Status.LastAppliedTopology,
+			Namespace: instance.Namespace,
+		},
+		instance.APIName(),
+	); err != nil {
 		return ctrlResult, err
 	}
 
@@ -841,19 +851,56 @@ func (r *GlanceAPIReconciler) reconcileNormal(
 	// we can mark the ServiceConfigReady as True and rollout the new pods
 	instance.Status.Conditions.MarkTrue(condition.ServiceConfigReadyCondition, condition.ServiceConfigReadyMessage)
 
+	//
+	// Handle Topology
+	//
 	var topology *topologyv1.Topology
 	// When the Topology CR reference is updated and the current GlanceAPI
 	// switches to a new Topology, remove the finalizer from the previous
 	// Topology
-	if instance.Spec.Topology == nil ||
-		(instance.Spec.Topology.Name != instance.Status.LastAppliedTopology) {
-		_, err = r.ensureDeletedTopology(ctx, instance, helper)
+	if instance.Spec.TopologyRef == nil && instance.Status.LastAppliedTopology != "" {
+		_, err = topologyRef.EnsureDeletedTopologyRef(
+			ctx,
+			helper,
+			r.Client,
+			&topologyRef.Topology{
+				Name:      instance.Status.LastAppliedTopology,
+				Namespace: instance.Namespace,
+			},
+			instance.APIName())
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	if instance.Spec.Topology != nil {
-		topology, err = r.ensureGlanceAPITopology(ctx, helper, instance)
+	// TopologyRef is passed as input
+	if instance.Spec.TopologyRef != nil {
+		// no Namespace is provided, default to instance.Namespace
+		if instance.Spec.TopologyRef.Namespace == "" {
+			instance.Spec.TopologyRef.Namespace = instance.Namespace
+		}
+		lastTopologyRef := topologyRef.Topology{
+			Name:      instance.Status.LastAppliedTopology,
+			Namespace: instance.Spec.TopologyRef.Namespace,
+		}
+		// Remove (if present) the finalizer from a previously referenced topology
+		if instance.Spec.TopologyRef.Name != instance.Status.LastAppliedTopology {
+			_, err = topologyRef.EnsureDeletedTopologyRef(
+				ctx,
+				helper,
+				r.Client,
+				&lastTopologyRef,
+				instance.APIName())
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		// Retrieve the referenced Topology
+		topology, _, err = topologyRef.EnsureTopologyRef(
+			ctx,
+			helper,
+			instance.Spec.TopologyRef,
+			instance.APIName(),
+		)
 		if err != nil {
 			instance.Status.Conditions.Set(condition.FalseCondition(
 				condition.TopologyReadyCondition,
@@ -861,12 +908,12 @@ func (r *GlanceAPIReconciler) reconcileNormal(
 				condition.SeverityWarning,
 				condition.TopologyReadyErrorMessage,
 				err.Error()))
-			r.Log.Info("Glance config is waiting for Topology requirements, requeueing...")
+			r.Log.Info("GlanceAPI config is waiting for Topology requirements, requeueing...")
 			return ctrl.Result{}, err
 		}
 		// update the Status with the last retrieved Topology name as the finalizer
 		// is now removed from the previous topologyRef
-		instance.Status.LastAppliedTopology = instance.Spec.Topology.Name
+		instance.Status.LastAppliedTopology = instance.Spec.TopologyRef.Name
 	}
 
 	// At this point Glance has a Topology CR (or not in case it's not referenced in the
@@ -1514,92 +1561,4 @@ func (r *GlanceAPIReconciler) glanceAPIRefresh(
 		return err
 	}
 	return nil
-}
-
-// ensureGlanceAPITopology - retrieve the associated Topology/Affinity CR
-func (r *GlanceAPIReconciler) ensureGlanceAPITopology(
-	ctx context.Context,
-	h *helper.Helper,
-	instance *glancev1.GlanceAPI,
-) (*topologyv1.Topology, error) {
-
-	var err error
-	var hash string
-	ns := instance.Namespace
-
-	if instance.Spec.Topology.Namespace != "" {
-		ns = instance.Spec.Topology.Namespace
-	}
-	topology, hash, err := topologyv1.GetTopologyByName(
-		ctx,
-		h,
-		instance.Spec.Topology.Name,
-		ns,
-	)
-	if err != nil {
-		if k8s_errors.IsNotFound(err) {
-			return topology, err
-		}
-		return topology, err
-	}
-
-	// Add finalizer to the resource because it is going to be consumed by GlanceAPI
-	if !controllerutil.ContainsFinalizer(topology, h.GetFinalizer()) {
-		controllerutil.AddFinalizer(topology, fmt.Sprintf("%s-%s", h.GetFinalizer(), instance.APIName()))
-	}
-	// Update the resource
-	if err := h.GetClient().Update(ctx, topology); err != nil {
-		return topology, err
-	}
-	if hashMap, changed := util.SetHash(instance.Status.Hash, "topology", hash); changed {
-		instance.Status.Hash = hashMap
-		r.Log.Info(fmt.Sprintf("Set Topology hash %s - %s", "topology", hash))
-	}
-	return topology, nil
-}
-
-// ensureDeletedTopology -
-func (r *GlanceAPIReconciler) ensureDeletedTopology(
-	ctx context.Context,
-	instance *glancev1.GlanceAPI,
-	h *helper.Helper,
-) (ctrl.Result, error) {
-	ns := instance.Namespace
-
-	// no Topology is passed to the GlanceAPI, and it was not used before
-	if instance.Status.LastAppliedTopology == "" {
-		return ctrl.Result{}, nil
-	}
-
-	// Topology is referenced in the .Spec, check the namespace
-	if instance.Spec.Topology != nil {
-		// Check namespace
-		if instance.Spec.Topology.Namespace != "" {
-			ns = instance.Spec.Topology.Namespace
-		}
-	}
-
-	name := instance.Status.LastAppliedTopology
-
-	// Remove the finalizer from the Topology CR
-	topology, _, err := topologyv1.GetTopologyByName(
-		ctx,
-		h,
-		name,
-		ns,
-	)
-
-	if err != nil && !k8s_errors.IsNotFound(err) {
-		return ctrl.Result{}, err
-	}
-	if !k8s_errors.IsNotFound(err) {
-		if controllerutil.RemoveFinalizer(topology, fmt.Sprintf("%s-%s", h.GetFinalizer(), instance.APIName())) {
-			err = r.Update(ctx, topology)
-			if err != nil && !k8s_errors.IsNotFound(err) {
-				return ctrl.Result{}, err
-			}
-			util.LogForObject(h, "Removed finalizer from Topology", topology)
-		}
-	}
-	return ctrl.Result{}, err
 }
