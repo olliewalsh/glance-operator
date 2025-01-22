@@ -900,6 +900,8 @@ func (r *GlanceAPIReconciler) reconcileNormal(
 			helper,
 			instance.Spec.TopologyRef,
 			instance.APIName(),
+			glanceapi.GetGlanceAPILabelSelector(instance),
+			glanceapi.GetGlanceAPIMatchLabelKey(),
 		)
 		if err != nil {
 			instance.Status.Conditions.Set(condition.FalseCondition(

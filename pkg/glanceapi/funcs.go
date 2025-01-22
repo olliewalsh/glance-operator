@@ -3,11 +3,13 @@ package glanceapi
 import (
 	glancev1 "github.com/openstack-k8s-operators/glance-operator/api/v1beta1"
 
+	"fmt"
+
 	glance "github.com/openstack-k8s-operators/glance-operator/pkg/glance"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/endpoint"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/service"
+	"github.com/openstack-k8s-operators/lib-common/modules/common/topology"
 
-	"fmt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -70,4 +72,22 @@ func GetGlanceAPIPodAffinity(instance *glancev1.GlanceAPI) *corev1.Affinity {
 			},
 		},
 	}
+}
+
+func GetGlanceAPILabelSelector(instance *glancev1.GlanceAPI) metav1.LabelSelector {
+	return metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      glance.GlanceAPIName,
+				Operator: metav1.LabelSelectorOpIn,
+				Values: []string{
+					fmt.Sprintf("%s-%s-%s", glance.ServiceName, instance.APIName(), instance.Spec.APIType),
+				},
+			},
+		},
+	}
+}
+
+func GetGlanceAPIMatchLabelKey() []string {
+	return []string{topology.StatefulsetMatchLabelKey}
 }

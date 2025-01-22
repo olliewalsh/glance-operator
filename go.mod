@@ -90,4 +90,4 @@ replace github.com/openstack-k8s-operators/glance-operator/api => ./api
 // must consistent within modules and service operators
 replace github.com/openshift/api => github.com/openshift/api v0.0.0-20240830023148-b7d0481c9094 //allow-merging
 
-replace github.com/openstack-k8s-operators/lib-common/modules/common => github.com/fmount/lib-common/modules/common v0.0.0-20250121110137-f3ec1120ae76 //allow-merging
+replace github.com/openstack-k8s-operators/lib-common/modules/common => github.com/olliewalsh/lib-common/modules/common v0.0.0-20250122164417-55863a0edc79
