@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	glance "github.com/openstack-k8s-operators/glance-operator/pkg/glance"
+	common "github.com/openstack-k8s-operators/lib-common/modules/common"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/endpoint"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/service"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/topology"
@@ -78,10 +79,10 @@ func GetGlanceAPILabelSelector(instance *glancev1.GlanceAPI) metav1.LabelSelecto
 	return metav1.LabelSelector{
 		MatchExpressions: []metav1.LabelSelectorRequirement{
 			{
-				Key:      glance.GlanceAPIName,
+				Key:      common.AppSelector,
 				Operator: metav1.LabelSelectorOpIn,
 				Values: []string{
-					fmt.Sprintf("%s-%s-%s", glance.ServiceName, instance.APIName(), instance.Spec.APIType),
+					glance.ServiceName,
 				},
 			},
 		},
